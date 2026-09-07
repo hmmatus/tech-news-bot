@@ -4,3 +4,4 @@ __pycache__/
 state/*.tmp
 .venv/
 .worktrees/
+.superpowers/
