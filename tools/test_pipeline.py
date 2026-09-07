@@ -287,4 +287,56 @@ _client_no_msg = _httpx.Client(transport=_httpx.MockTransport(_handler_no_messag
 assert fetch_x_news(cfg_on, _now, client=_client_no_msg) == []
 print("OK  x_news: respuesta sin mensaje devuelve []")
 
+# 12f) items malformado: null en lugar de lista
+def _handler_items_null(request):
+    return _httpx.Response(
+        200,
+        json={
+            "output": [
+                {
+                    "type": "message",
+                    "content": [
+                        {
+                            "text": json.dumps({"items": None}),
+                            "annotations": [
+                                {"type": "url_citation", "url": "https://real.test/a", "title": "Real"}
+                            ],
+                        }
+                    ],
+                }
+            ]
+        },
+    )
+
+
+_client_items_null = _httpx.Client(transport=_httpx.MockTransport(_handler_items_null))
+assert fetch_x_news(cfg_on, _now, client=_client_items_null) == []
+print("OK  x_news: items null devuelve [] sin lanzar")
+
+# 12g) items contiene no-dict
+def _handler_items_nondict(request):
+    return _httpx.Response(
+        200,
+        json={
+            "output": [
+                {
+                    "type": "message",
+                    "content": [
+                        {
+                            "text": json.dumps({"items": [123, "string"]}),
+                            "annotations": [
+                                {"type": "url_citation", "url": "https://real.test/a", "title": "Real"}
+                            ],
+                        }
+                    ],
+                }
+            ]
+        },
+    )
+
+
+_client_items_nondict = _httpx.Client(transport=_httpx.MockTransport(_handler_items_nondict))
+assert fetch_x_news(cfg_on, _now, client=_client_items_nondict) == []
+print("OK  x_news: items con valores no-dict devuelve [] sin lanzar")
+
 os.environ.pop("OPENAI_API_KEY", None)

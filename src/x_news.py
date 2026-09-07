@@ -219,15 +219,22 @@ def fetch_x_news(
     try:
         parsed = json.loads(text)
         raw_items = parsed["items"]
+        if not isinstance(raw_items, list):
+            raise TypeError("items no es una lista")
     except (ValueError, KeyError, TypeError) as exc:
         log.warning("JSON de OpenAI con forma inesperada: %s", exc)
         return []
 
     items: list[Item] = []
     for raw in raw_items:
-        url = (raw.get("url") or "").strip()
-        title = (raw.get("title") or "").strip()
-        source = (raw.get("source") or "X").strip()
+        if not isinstance(raw, dict):
+            continue
+        url_val = raw.get("url")
+        title_val = raw.get("title")
+        source_val = raw.get("source")
+        url = (url_val if isinstance(url_val, str) else "").strip()
+        title = (title_val if isinstance(title_val, str) else "").strip()
+        source = (source_val if isinstance(source_val, str) else "X").strip()
         if not url or not title:
             continue
         if normalize_url(url) not in citations:
