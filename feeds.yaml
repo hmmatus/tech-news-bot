@@ -1,0 +1,140 @@
+# ---------------------------------------------------------------------------
+# Fuentes. El `tag` es el valor por defecto; las `keywords` de abajo pueden
+# reclasificar una nota a un tag más específico (p.ej. una nota de TechCrunch
+# que hable de un CVE se marca como CIBERSEGURIDAD).
+# Tags válidos: IA, CIBERSEGURIDAD, LANZAMIENTO, TECH
+# ---------------------------------------------------------------------------
+feeds:
+  # --- Inteligencia artificial ---
+  - name: OpenAI
+    url: https://openai.com/news/rss.xml
+    tag: IA
+  - name: Google AI
+    url: https://blog.google/technology/ai/rss/
+    tag: IA
+  - name: Hugging Face
+    url: https://huggingface.co/blog/feed.xml
+    tag: IA
+  - name: MIT Tech Review AI
+    url: https://www.technologyreview.com/topic/artificial-intelligence/feed
+    tag: IA
+  - name: VentureBeat AI
+    url: https://venturebeat.com/category/ai/feed/
+    tag: IA
+
+  # --- Ciberseguridad ---
+  - name: BleepingComputer
+    url: https://www.bleepingcomputer.com/feed/
+    tag: CIBERSEGURIDAD
+  - name: The Hacker News
+    url: https://feeds.feedburner.com/TheHackersNews
+    tag: CIBERSEGURIDAD
+  - name: Krebs on Security
+    url: https://krebsonsecurity.com/feed/
+    tag: CIBERSEGURIDAD
+  - name: CISA Advisories
+    url: https://www.cisa.gov/cybersecurity-advisories/all.xml
+    tag: CIBERSEGURIDAD
+
+  # --- Lanzamientos FAANG / big tech (fuentes oficiales) ---
+  - name: Apple Newsroom
+    url: https://www.apple.com/newsroom/rss-feed.rss
+    tag: LANZAMIENTO
+  - name: Google Products
+    url: https://blog.google/products/rss/
+    tag: LANZAMIENTO
+  - name: Meta Engineering
+    url: https://engineering.fb.com/feed/
+    tag: LANZAMIENTO
+  - name: AWS What's New
+    url: https://aws.amazon.com/about-aws/whats-new/recent/feed/
+    tag: LANZAMIENTO
+  - name: Microsoft Azure
+    url: https://azure.microsoft.com/en-us/blog/feed/
+    tag: LANZAMIENTO
+
+  # --- Tecnología general ---
+  - name: TechCrunch
+    url: https://techcrunch.com/feed/
+    tag: TECH
+  - name: Ars Technica
+    url: https://feeds.arstechnica.com/arstechnica/index
+    tag: TECH
+  - name: The Verge
+    url: https://www.theverge.com/rss/index.xml
+    tag: TECH
+
+# ---------------------------------------------------------------------------
+# Reclasificación por palabras clave. Se evalúan en orden de especificidad:
+# CIBERSEGURIDAD > IA > LANZAMIENTO > TECH. La primera coincidencia gana.
+# ---------------------------------------------------------------------------
+keywords:
+  CIBERSEGURIDAD:
+    - ransomware
+    - vulnerability
+    - vulnerabilidad
+    - zero-day
+    - zero day
+    - cve-
+    - breach
+    - data leak
+    - malware
+    - phishing
+    - exploit
+    - backdoor
+    - botnet
+    - hackers
+    - cyberattack
+    - ciberataque
+    - patch tuesday
+    - security flaw
+  IA:
+    - " ai "
+    - "ai:"
+    - artificial intelligence
+    - inteligencia artificial
+    - machine learning
+    - llm
+    - gpt
+    - claude
+    - gemini
+    - llama
+    - mistral
+    - openai
+    - anthropic
+    - deepmind
+    - hugging face
+    - transformer
+    - diffusion
+    - agentic
+    - copilot
+    - neural
+  LANZAMIENTO:
+    - launches
+    - launched
+    - announces
+    - unveils
+    - introducing
+    - now available
+    - general availability
+    - releases
+    - rolls out
+    - lanzamiento
+    - presenta
+  TECH: []
+
+settings:
+  # Ventana de búsqueda. Manténla algo mayor que el intervalo del cron para
+  # tolerar retrasos de GitHub Actions; la deduplicación evita repetidos.
+  lookback_hours: 6
+  # Tope de notas por corrida, para que el bot no te inunde el chat.
+  max_items_per_run: 15
+  timezone: America/El_Salvador
+  # true = descarta lo que no coincida con ninguna palabra clave y venga de un
+  # feed genérico (TECH). Súbelo a true si quieres solo IA/seguridad/lanzamientos.
+  require_keyword: false
+  # Hacker News: umbral de puntos para considerar una historia relevante.
+  hn_enabled: true
+  hn_min_points: 80
+  # Cuántos días recordar una nota ya enviada.
+  state_retention_days: 14
