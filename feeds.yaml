@@ -138,3 +138,18 @@ settings:
   hn_min_points: 80
   # Cuántos días recordar una nota ya enviada.
   state_retention_days: 14
+
+# ---------------------------------------------------------------------------
+# Búsqueda en X (Twitter) vía OpenAI Responses API + web_search. Deshabilitado
+# por defecto: es una fuente opcional que requiere OPENAI_API_KEY (secret de
+# GitHub Actions o variable de entorno local) y tiene costo por corrida.
+# Ver docs/superpowers/specs/2026-09-06-x-news-source-design.md
+# ---------------------------------------------------------------------------
+x_search:
+  enabled: false
+  queries:
+    - "AI news trending on X twitter"
+    - "cybersecurity news trending on X twitter"
+  max_items: 5
+  model: gpt-5.6-luna
+  search_context_size: low
