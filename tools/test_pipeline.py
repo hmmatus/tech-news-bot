@@ -201,3 +201,90 @@ print("OK  x_news: 5xx agota los 3 intentos y lanza la excepción original")
 
 print("\n--- muestra del mensaje ---")
 print(msgs[0])
+
+# 12) x_news: fetch_x_news end-to-end (citation gate, disabled, sin key, JSON malo)
+from src.x_news import fetch_x_news
+from datetime import datetime as _dt, timezone as _tz
+
+_now = _dt.now(_tz.utc)
+
+# 12a) deshabilitado por defecto: no debe llamar a la red en absoluto
+cfg_off = _load_config(_tmp_cfg_path)
+cfg_off.x_search_enabled = False
+
+
+def _handler_should_not_be_called(request):
+    raise AssertionError("no debía llamar a la red con x_search deshabilitado")
+
+
+_client_off = _httpx.Client(transport=_httpx.MockTransport(_handler_should_not_be_called))
+assert fetch_x_news(cfg_off, _now, client=_client_off) == []
+print("OK  x_news: deshabilitado no llama a la red")
+
+# 12b) habilitado pero sin OPENAI_API_KEY: devuelve [] sin lanzar
+os.environ.pop("OPENAI_API_KEY", None)
+cfg_on_sin_key = _load_config(_tmp_cfg_path)
+assert cfg_on_sin_key.x_search_enabled is True
+assert fetch_x_news(cfg_on_sin_key, _now, client=_client_off) == []
+print("OK  x_news: sin OPENAI_API_KEY devuelve [] sin llamar a la red")
+
+# 12c) con key: citation gate descarta URL no citada, conserva la citada
+os.environ["OPENAI_API_KEY"] = "sk-test-123"
+cfg_on = _load_config(_tmp_cfg_path)
+
+
+def _handler_mixed_citations(request):
+    return _httpx.Response(
+        200,
+        json={
+            "output": [
+                {
+                    "type": "message",
+                    "content": [
+                        {
+                            "text": json.dumps(
+                                {
+                                    "items": [
+                                        {"title": "Real", "url": "https://real.test/a", "source": "S"},
+                                        {"title": "Inventada", "url": "https://fake.test/z", "source": "S"},
+                                    ]
+                                }
+                            ),
+                            "annotations": [
+                                {"type": "url_citation", "url": "https://real.test/a", "title": "Real"}
+                            ],
+                        }
+                    ],
+                }
+            ]
+        },
+    )
+
+
+_client_mixed = _httpx.Client(transport=_httpx.MockTransport(_handler_mixed_citations))
+result = fetch_x_news(cfg_on, _now, client=_client_mixed)
+assert len(result) == 1
+assert result[0].url == "https://real.test/a"
+assert result[0].title == "Real"
+assert result[0].tag == "TECH"
+print("OK  x_news: citation gate descarta URLs no citadas")
+
+# 12d) JSON malformado -> [] sin lanzar
+def _handler_bad_json(request):
+    return _httpx.Response(200, content=b"not json")
+
+
+_client_bad = _httpx.Client(transport=_httpx.MockTransport(_handler_bad_json))
+assert fetch_x_news(cfg_on, _now, client=_client_bad) == []
+print("OK  x_news: respuesta no-JSON devuelve [] sin lanzar")
+
+# 12e) sin mensaje de salida (p.ej. solo web_search_call) -> []
+def _handler_no_message(request):
+    return _httpx.Response(200, json={"output": [{"type": "web_search_call"}]})
+
+
+_client_no_msg = _httpx.Client(transport=_httpx.MockTransport(_handler_no_message))
+assert fetch_x_news(cfg_on, _now, client=_client_no_msg) == []
+print("OK  x_news: respuesta sin mensaje devuelve []")
+
+os.environ.pop("OPENAI_API_KEY", None)

@@ -166,3 +166,84 @@ def _post_with_retries(
     assert response is not None
     response.raise_for_status()
     raise AssertionError("unreachable")  # pragma: no cover
+
+
+def fetch_x_news(
+    cfg: Config, since: datetime, client: httpx.Client | None = None
+) -> list[Item]:
+    if not cfg.x_search_enabled:
+        return []
+
+    api_key = cfg.openai_api_key
+    if api_key is None:
+        log.warning("OPENAI_API_KEY no configurada; se omite la búsqueda en X.")
+        return []
+
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    body = _build_body(cfg)
+
+    owns_client = client is None
+    if owns_client:
+        client = httpx.Client(timeout=TIMEOUT)
+
+    try:
+        response = _post_with_retries(client, RESPONSES_ENDPOINT, headers, body)
+    except httpx.HTTPError as exc:
+        log.warning("No se pudo consultar noticias de X: %s", exc)
+        return []
+    finally:
+        if owns_client:
+            client.close()
+
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        log.warning("Respuesta inválida de OpenAI: %s", exc)
+        return []
+
+    message = _extract_message(payload)
+    if message is None:
+        log.warning("Respuesta de OpenAI sin mensaje de salida.")
+        return []
+
+    citations = _citation_urls(message)
+    if not citations:
+        log.warning("Respuesta de OpenAI sin citas web_search; se descarta.")
+        return []
+
+    text = _message_text(message)
+    if not text:
+        log.warning("Respuesta de OpenAI sin contenido de texto.")
+        return []
+
+    try:
+        parsed = json.loads(text)
+        raw_items = parsed["items"]
+    except (ValueError, KeyError, TypeError) as exc:
+        log.warning("JSON de OpenAI con forma inesperada: %s", exc)
+        return []
+
+    items: list[Item] = []
+    for raw in raw_items:
+        url = (raw.get("url") or "").strip()
+        title = (raw.get("title") or "").strip()
+        source = (raw.get("source") or "X").strip()
+        if not url or not title:
+            continue
+        if normalize_url(url) not in citations:
+            log.debug("Descartada por falta de cita: %s", url)
+            continue
+        items.append(
+            Item(
+                title=title,
+                url=url,
+                published=datetime.now(timezone.utc),
+                source=source,
+                tag="TECH",
+            )
+        )
+        if len(items) >= cfg.x_search_max_items:
+            break
+
+    log.info("%-22s %2d nota(s) recientes", "X (Twitter)", len(items))
+    return items
