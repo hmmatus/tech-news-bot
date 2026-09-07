@@ -29,6 +29,11 @@ class Config:
     hn_min_points: int = 80
     hn_enabled: bool = True
     state_retention_days: int = 14
+    x_search_enabled: bool = False
+    x_search_queries: list[str] = field(default_factory=list)
+    x_search_max_items: int = 5
+    x_search_model: str = "gpt-5.6-luna"
+    x_search_context_size: str = "low"
 
     @property
     def telegram_token(self) -> str:
@@ -37,6 +42,12 @@ class Config:
     @property
     def telegram_chat_id(self) -> str:
         return _require_env("TELEGRAM_CHAT_ID")
+
+    @property
+    def openai_api_key(self) -> str | None:
+        """A diferencia de telegram_token, esta NO lanza si falta: la
+        búsqueda en X es una fuente opcional, no un requisito para correr."""
+        return os.environ.get("OPENAI_API_KEY", "").strip() or None
 
 
 def _require_env(name: str) -> str:
@@ -71,6 +82,7 @@ def load(path: str | Path = ROOT / "feeds.yaml") -> Config:
 
     settings = raw.get("settings", {}) or {}
     keywords = {k.upper(): [w.lower() for w in v] for k, v in (raw.get("keywords") or {}).items()}
+    x_search = raw.get("x_search", {}) or {}
 
     return Config(
         feeds=feeds,
@@ -82,4 +94,9 @@ def load(path: str | Path = ROOT / "feeds.yaml") -> Config:
         hn_min_points=int(settings.get("hn_min_points", 80)),
         hn_enabled=bool(settings.get("hn_enabled", True)),
         state_retention_days=int(settings.get("state_retention_days", 14)),
+        x_search_enabled=bool(x_search.get("enabled", False)),
+        x_search_queries=[str(q) for q in (x_search.get("queries") or [])],
+        x_search_max_items=int(x_search.get("max_items", 5)),
+        x_search_model=str(x_search.get("model", "gpt-5.6-luna")),
+        x_search_context_size=str(x_search.get("search_context_size", "low")),
     )

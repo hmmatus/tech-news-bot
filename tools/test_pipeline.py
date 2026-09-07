@@ -77,5 +77,52 @@ peligroso = Item("Bug in <script> & \"quotes\"", "https://x.test/z", now, "S", "
 assert "&lt;script&gt;" in telegram.format_item(peligroso, cfg.timezone)
 print("OK  escapado HTML")
 
+# 9) config: bloque x_search opcional, con defaults seguros si falta
+# (tempfile ya está importado arriba, en la cabecera del script)
+from src.config import load as _load_config
+
+_feeds_yaml_sin_x_search = """
+feeds:
+  - name: Test Feed
+    url: https://example.test/feed.xml
+    tag: TECH
+"""
+_tmp_cfg_path = Path(tempfile.mkdtemp()) / "feeds.yaml"
+_tmp_cfg_path.write_text(_feeds_yaml_sin_x_search, encoding="utf-8")
+cfg_sin_x = _load_config(_tmp_cfg_path)
+assert cfg_sin_x.x_search_enabled is False
+assert cfg_sin_x.x_search_queries == []
+assert cfg_sin_x.x_search_max_items == 5
+assert cfg_sin_x.x_search_model == "gpt-5.6-luna"
+assert cfg_sin_x.x_search_context_size == "low"
+print("OK  x_search: defaults seguros cuando el bloque falta")
+
+_feeds_yaml_con_x_search = _feeds_yaml_sin_x_search + """
+x_search:
+  enabled: true
+  queries:
+    - "AI news trending on X twitter"
+  max_items: 3
+  model: gpt-6-astra
+  search_context_size: medium
+"""
+_tmp_cfg_path.write_text(_feeds_yaml_con_x_search, encoding="utf-8")
+cfg_con_x = _load_config(_tmp_cfg_path)
+assert cfg_con_x.x_search_enabled is True
+assert cfg_con_x.x_search_queries == ["AI news trending on X twitter"]
+assert cfg_con_x.x_search_max_items == 3
+assert cfg_con_x.x_search_model == "gpt-6-astra"
+assert cfg_con_x.x_search_context_size == "medium"
+print("OK  x_search: bloque explícito se parsea correctamente")
+
+import os
+
+os.environ.pop("OPENAI_API_KEY", None)
+assert cfg_con_x.openai_api_key is None
+os.environ["OPENAI_API_KEY"] = "sk-test-123"
+assert cfg_con_x.openai_api_key == "sk-test-123"
+os.environ.pop("OPENAI_API_KEY", None)
+print("OK  x_search: openai_api_key no lanza, devuelve None si falta")
+
 print("\n--- muestra del mensaje ---")
 print(msgs[0])
