@@ -163,5 +163,41 @@ assert _citation_urls({"content": []}) == set()
 assert _message_text({"content": []}) is None
 print("OK  x_news: helpers devuelven vacío/None ante respuesta sin datos")
 
+# 11) x_news: reintentos con backoff (429 con Retry-After, 5xx, agotamiento)
+from src.x_news import _post_with_retries
+import httpx as _httpx
+
+_calls = {"n": 0}
+
+
+def _handler_429_then_ok(request):
+    _calls["n"] += 1
+    if _calls["n"] == 1:
+        return _httpx.Response(429, headers={"Retry-After": "0"}, json={})
+    return _httpx.Response(200, json={"ok": True})
+
+
+_client = _httpx.Client(transport=_httpx.MockTransport(_handler_429_then_ok))
+_resp = _post_with_retries(_client, "https://api.openai.com/v1/responses", {}, {})
+assert _resp.status_code == 200 and _calls["n"] == 2
+print("OK  x_news: 429 respeta Retry-After y reintenta hasta 200")
+
+_calls["n"] = 0
+
+
+def _handler_exhausted_5xx(request):
+    _calls["n"] += 1
+    return _httpx.Response(503, json={})
+
+
+_client2 = _httpx.Client(transport=_httpx.MockTransport(_handler_exhausted_5xx))
+try:
+    _post_with_retries(_client2, "https://api.openai.com/v1/responses", {}, {})
+    raise AssertionError("debía lanzar tras agotar reintentos")
+except _httpx.HTTPStatusError:
+    pass
+assert _calls["n"] == 3
+print("OK  x_news: 5xx agota los 3 intentos y lanza la excepción original")
+
 print("\n--- muestra del mensaje ---")
 print(msgs[0])

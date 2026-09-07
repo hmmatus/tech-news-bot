@@ -105,3 +105,64 @@ def _message_text(message: dict) -> str | None:
         if text:
             return text
     return None
+
+
+def _exponential_backoff(attempt: int) -> float:
+    """Full jitter: espera aleatoria entre 0 y 2**attempt (tope 30s)."""
+    ceiling = min(MAX_BACKOFF_SECONDS, float(2**attempt))
+    return random.uniform(0, ceiling)
+
+
+def _retry_after_seconds(response: httpx.Response) -> float | None:
+    value = response.headers.get("Retry-After")
+    if not value:
+        return None
+    try:
+        return min(float(value), MAX_BACKOFF_SECONDS)
+    except ValueError:
+        return None
+
+
+def _post_with_retries(
+    client: httpx.Client, url: str, headers: dict, body: dict
+) -> httpx.Response:
+    """POST con reintentos (máx 3): Retry-After en 429, backoff exponencial
+    con jitter en 5xx/errores de red. Agotados los intentos, lanza la
+    excepción/status original."""
+    last_exc: Exception | None = None
+    response: httpx.Response | None = None
+
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            response = client.post(url, headers=headers, json=body)
+        except httpx.HTTPError as exc:
+            last_exc = exc
+            if attempt < MAX_RETRIES:
+                time.sleep(_exponential_backoff(attempt))
+            continue
+
+        if response.status_code == 200:
+            return response
+
+        if response.status_code == 429:
+            if attempt < MAX_RETRIES:
+                wait = _retry_after_seconds(response)
+                if wait is None:
+                    wait = _exponential_backoff(attempt)
+                time.sleep(wait)
+                continue
+            response.raise_for_status()
+
+        if response.status_code >= 500:
+            if attempt < MAX_RETRIES:
+                time.sleep(_exponential_backoff(attempt))
+                continue
+            response.raise_for_status()
+
+        response.raise_for_status()
+
+    if last_exc is not None:
+        raise last_exc
+    assert response is not None
+    response.raise_for_status()
+    raise AssertionError("unreachable")  # pragma: no cover
