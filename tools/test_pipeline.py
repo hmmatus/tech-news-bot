@@ -340,3 +340,19 @@ assert fetch_x_news(cfg_on, _now, client=_client_items_nondict) == []
 print("OK  x_news: items con valores no-dict devuelve [] sin lanzar")
 
 os.environ.pop("OPENAI_API_KEY", None)
+
+# 13) collect(): concatena rss + hackernews + x_news (sin red real, con mocks)
+from unittest.mock import patch as _patch
+from src import sources as _sources
+
+_item_rss = Item("R", "https://x.test/r", now, "RSS", "TECH")
+_item_hn = Item("H", "https://x.test/h", now, "HN", "TECH")
+_item_x = Item("X", "https://x.test/x", now, "X", "TECH")
+
+with _patch.object(_sources, "fetch_rss", return_value=[_item_rss]), \
+     _patch.object(_sources, "fetch_hackernews", return_value=[_item_hn]), \
+     _patch("src.x_news.fetch_x_news", return_value=[_item_x]):
+    collected = _sources.collect(cfg)
+
+assert {i.title for i in collected} == {"R", "H", "X"}
+print("OK  collect(): concatena las tres fuentes")
