@@ -124,5 +124,44 @@ assert cfg_con_x.openai_api_key == "sk-test-123"
 os.environ.pop("OPENAI_API_KEY", None)
 print("OK  x_search: openai_api_key no lanza, devuelve None si falta")
 
+# 10) x_news: helpers de construcción de request y parseo de respuesta
+from src.x_news import _build_body, _extract_message, _citation_urls, _message_text
+
+cfg_x = _load_config(_tmp_cfg_path)  # el que tiene x_search habilitado, del bloque anterior
+body = _build_body(cfg_x)
+assert body["model"] == "gpt-6-astra"
+assert body["tools"] == [{"type": "web_search", "search_context_size": "medium"}]
+assert body["text"]["format"]["type"] == "json_schema"
+assert body["text"]["format"]["strict"] is True
+assert "AI news trending on X twitter" in body["input"][1]["content"]
+print("OK  x_news: _build_body arma el request correctamente")
+
+_fake_response_body = {
+    "output": [
+        {"type": "web_search_call", "id": "ws_1"},
+        {
+            "type": "message",
+            "content": [
+                {
+                    "text": '{"items": [{"title": "T", "url": "https://real.test/a", "source": "S"}]}',
+                    "annotations": [
+                        {"type": "url_citation", "url": "https://real.test/a", "title": "T"}
+                    ],
+                }
+            ],
+        },
+    ]
+}
+msg = _extract_message(_fake_response_body)
+assert msg is not None and msg["type"] == "message"
+assert _citation_urls(msg) == {"https://real.test/a"}
+assert "real.test/a" in _message_text(msg)
+print("OK  x_news: _extract_message/_citation_urls/_message_text parsean la respuesta")
+
+assert _extract_message({"output": []}) is None
+assert _citation_urls({"content": []}) == set()
+assert _message_text({"content": []}) is None
+print("OK  x_news: helpers devuelven vacío/None ante respuesta sin datos")
+
 print("\n--- muestra del mensaje ---")
 print(msgs[0])
