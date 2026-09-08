@@ -1,19 +1,25 @@
 """Fuente de noticias vía OpenAI Responses API + web_search: rastrea qué se
 está discutiendo en X/Twitter sobre tech/IA/seguridad.
 
-Las URLs que el modelo devuelve en el JSON NUNCA se confían directamente:
-solo sobreviven las que coinciden con una citación real (`url_citation`)
-que la herramienta web_search haya devuelto, es decir, una página que de
-verdad fue consultada. Esa es la única barrera de confianza en esta
-versión (ver docs/superpowers/specs/2026-09-06-x-news-source-design.md).
+No se le pide al modelo una lista JSON estructurada de noticias -- eso
+requeriría confiar en una URL que el propio modelo escribió, verificada
+después contra las citas (y en la práctica, combinar `web_search` con un
+`text.format` de json_schema estricto hace que la API deje de adjuntar
+citas del todo: la búsqueda ocurre, pero las anotaciones vienen vacías).
+
+En vez de eso, los `Item` se construyen directamente a partir de las citas
+(`url_citation`) que la propia herramienta web_search devuelve: cada cita
+ya trae su URL y su título reales, de una página que sí fue consultada. No
+hay ninguna URL de por medio que no haya sido citada (ver
+docs/superpowers/specs/2026-09-06-x-news-source-design.md).
 """
 from __future__ import annotations
 
-import json
 import logging
 import random
 import time
 from datetime import datetime, timezone
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -31,33 +37,9 @@ MAX_BACKOFF_SECONDS = 30.0
 _SYSTEM_PROMPT = (
     "Busca noticias de tecnología, IA o ciberseguridad que se estén "
     "discutiendo activamente en X (Twitter) ahora mismo, usando la "
-    "herramienta de búsqueda web. Devuelve solo notas que hayas encontrado "
-    "por búsqueda, nunca inventadas de memoria. Para cada nota da un "
-    "título, la URL canónica del artículo o fuente (no un tweet adivinado), "
-    "y el nombre del medio o cuenta. Si no encuentras nada relevante, "
-    "devuelve una lista vacía."
+    "herramienta de búsqueda web. Cita las fuentes reales que encuentres. "
+    "Si no encuentras nada relevante, dilo brevemente y no inventes nada."
 )
-
-_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "items": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "title": {"type": "string"},
-                    "url": {"type": "string"},
-                    "source": {"type": "string"},
-                },
-                "required": ["title", "url", "source"],
-                "additionalProperties": False,
-            },
-        }
-    },
-    "required": ["items"],
-    "additionalProperties": False,
-}
 
 
 def _build_body(cfg: Config) -> dict:
@@ -71,14 +53,6 @@ def _build_body(cfg: Config) -> dict:
         "tools": [
             {"type": "web_search", "search_context_size": cfg.x_search_context_size}
         ],
-        "text": {
-            "format": {
-                "type": "json_schema",
-                "name": "x_news_items",
-                "strict": True,
-                "schema": _SCHEMA,
-            }
-        },
     }
 
 
@@ -89,12 +63,12 @@ def _extract_message(body: dict) -> dict | None:
     return None
 
 
-def _citation_urls(message: dict) -> dict[str, str]:
-    """Mapa normalize_url(url_citada) -> url_citada tal cual la devolvió
-    web_search. Se usa el valor (no la clave) al construir el Item, para que
-    la URL final sea literalmente la que la herramienta citó, no una que
-    simplemente normalice igual (ver hallazgo de citation-gate spoofing)."""
-    urls: dict[str, str] = {}
+def _citations(message: dict) -> list[dict[str, str]]:
+    """Extrae citas reales de web_search: cada una ya trae su propia url y
+    title tal como la herramienta las devolvió. Deduplicadas por URL
+    normalizada, se preserva la primera aparición."""
+    seen: set[str] = set()
+    result: list[dict[str, str]] = []
     for block in message.get("content", []):
         if not isinstance(block, dict):
             continue
@@ -102,17 +76,24 @@ def _citation_urls(message: dict) -> dict[str, str]:
             if not isinstance(annotation, dict):
                 continue
             url = annotation.get("url")
-            if url:
-                urls[normalize_url(url)] = url
-    return urls
+            if not isinstance(url, str) or not url:
+                continue
+            key = normalize_url(url)
+            if key in seen:
+                continue
+            seen.add(key)
+            title = annotation.get("title")
+            result.append(
+                {"url": url, "title": title if isinstance(title, str) and title else url}
+            )
+    return result
 
 
-def _message_text(message: dict) -> str | None:
-    for block in message.get("content", []):
-        text = block.get("text")
-        if text:
-            return text
-    return None
+def _source_from_url(url: str) -> str:
+    host = urlsplit(url).netloc.lower()
+    if host.startswith("www."):
+        host = host[4:]
+    return host or "X"
 
 
 def _exponential_backoff(attempt: int) -> float:
@@ -209,63 +190,33 @@ def fetch_x_news(
 
     try:
         payload = response.json()
-
         message = _extract_message(payload)
         if message is None:
             log.warning("Respuesta de OpenAI sin mensaje de salida.")
             return []
-
-        citations = _citation_urls(message)
-        if not citations:
-            diag_text = _message_text(message)
-            log.warning(
-                "Respuesta de OpenAI sin citas web_search; se descarta "
-                "(%d caracteres de texto).",
-                len(diag_text) if diag_text else 0,
-            )
-            return []
-
-        text = _message_text(message)
-        if not text:
-            log.warning("Respuesta de OpenAI sin contenido de texto.")
-            return []
-
-        parsed = json.loads(text)
-        raw_items = parsed["items"]
-        if not isinstance(raw_items, list):
-            raise TypeError("items no es una lista")
+        citations = _citations(message)
     except Exception as exc:
-        # Cubre JSON inválido, forma inesperada (top-level no es un dict,
+        # Cubre JSON inválido o forma inesperada (top-level no es un dict,
         # "output"/"content"/"annotations" con tipos que no son lista/dict,
         # etc.) que haría que .get()/[...] lance AttributeError/TypeError/
-        # KeyError/ValueError más adelante en el parseo.
+        # ValueError más adelante en el parseo.
         log.warning("Respuesta de OpenAI con forma inesperada: %s", exc)
         return []
 
+    if not citations:
+        log.warning("Respuesta de OpenAI sin citas web_search; no hay nada que reportar.")
+        return []
+
     items: list[Item] = []
-    for raw in raw_items:
+    for citation in citations:
         if cfg.x_search_max_items <= 0 or len(items) >= cfg.x_search_max_items:
             break
-        if not isinstance(raw, dict):
-            continue
-        url_val = raw.get("url")
-        title_val = raw.get("title")
-        source_val = raw.get("source")
-        url = (url_val if isinstance(url_val, str) else "").strip()
-        title = (title_val if isinstance(title_val, str) else "").strip()
-        source = (source_val if isinstance(source_val, str) else "X").strip()
-        if not url or not title:
-            continue
-        cited_url = citations.get(normalize_url(url))
-        if cited_url is None:
-            log.debug("Descartada por falta de cita: %r", url)
-            continue
         items.append(
             Item(
-                title=title,
-                url=cited_url,
+                title=citation["title"],
+                url=citation["url"],
                 published=datetime.now(timezone.utc),
-                source=source,
+                source=_source_from_url(citation["url"]),
                 tag="TECH",
             )
         )

@@ -125,16 +125,15 @@ os.environ.pop("OPENAI_API_KEY", None)
 print("OK  x_search: openai_api_key no lanza, devuelve None si falta")
 
 # 10) x_news: helpers de construcción de request y parseo de respuesta
-from src.x_news import _build_body, _extract_message, _citation_urls, _message_text
+from src.x_news import _build_body, _extract_message, _citations, _source_from_url
 
 cfg_x = _load_config(_tmp_cfg_path)  # el que tiene x_search habilitado, del bloque anterior
 body = _build_body(cfg_x)
 assert body["model"] == "gpt-6-astra"
 assert body["tools"] == [{"type": "web_search", "search_context_size": "medium"}]
-assert body["text"]["format"]["type"] == "json_schema"
-assert body["text"]["format"]["strict"] is True
+assert "text" not in body, "no debe pedirse json_schema: web_search + strict schema deja las citas vacías"
 assert "AI news trending on X twitter" in body["input"][1]["content"]
-print("OK  x_news: _build_body arma el request correctamente")
+print("OK  x_news: _build_body arma el request correctamente (sin json_schema)")
 
 _fake_response_body = {
     "output": [
@@ -143,9 +142,11 @@ _fake_response_body = {
             "type": "message",
             "content": [
                 {
-                    "text": '{"items": [{"title": "T", "url": "https://real.test/a", "source": "S"}]}',
+                    "text": "Aquí hay una nota real sobre IA.",
                     "annotations": [
-                        {"type": "url_citation", "url": "https://real.test/a", "title": "T"}
+                        {"type": "url_citation", "url": "https://real.test/a", "title": "T"},
+                        {"type": "url_citation", "url": "https://real.test/a?utm_source=x", "title": "T dup"},
+                        {"type": "url_citation", "url": "https://real.test/b", "title": "T2"},
                     ],
                 }
             ],
@@ -154,14 +155,20 @@ _fake_response_body = {
 }
 msg = _extract_message(_fake_response_body)
 assert msg is not None and msg["type"] == "message"
-assert _citation_urls(msg) == {"https://real.test/a": "https://real.test/a"}
-assert "real.test/a" in _message_text(msg)
-print("OK  x_news: _extract_message/_citation_urls/_message_text parsean la respuesta")
+cites = _citations(msg)
+assert cites == [
+    {"url": "https://real.test/a", "title": "T"},
+    {"url": "https://real.test/b", "title": "T2"},
+], cites
+print("OK  x_news: _extract_message/_citations parsean la respuesta y deduplican por URL normalizada")
 
 assert _extract_message({"output": []}) is None
-assert _citation_urls({"content": []}) == {}
-assert _message_text({"content": []}) is None
+assert _citations({"content": []}) == []
 print("OK  x_news: helpers devuelven vacío/None ante respuesta sin datos")
+
+assert _source_from_url("https://www.TechCrunch.com/a/b") == "techcrunch.com"
+assert _source_from_url("https://real.test/a") == "real.test"
+print("OK  x_news: _source_from_url deriva el dominio de la cita")
 
 # 11) x_news: reintentos con backoff (429 con Retry-After, 5xx, agotamiento)
 from src.x_news import _post_with_retries
@@ -228,12 +235,14 @@ assert cfg_on_sin_key.x_search_enabled is True
 assert fetch_x_news(cfg_on_sin_key, _now, client=_client_off) == []
 print("OK  x_news: sin OPENAI_API_KEY devuelve [] sin llamar a la red")
 
-# 12c) con key: citation gate descarta URL no citada, conserva la citada
+# 12c) con key: los Item se construyen directamente desde las citas de
+# web_search (título y URL vienen de la propia anotación, no de JSON
+# generado por el modelo), deduplicadas por URL normalizada.
 os.environ["OPENAI_API_KEY"] = "sk-test-123"
 cfg_on = _load_config(_tmp_cfg_path)
 
 
-def _handler_mixed_citations(request):
+def _handler_real_citations(request):
     return _httpx.Response(
         200,
         json={
@@ -242,16 +251,18 @@ def _handler_mixed_citations(request):
                     "type": "message",
                     "content": [
                         {
-                            "text": json.dumps(
-                                {
-                                    "items": [
-                                        {"title": "Real", "url": "https://real.test/a", "source": "S"},
-                                        {"title": "Inventada", "url": "https://fake.test/z", "source": "S"},
-                                    ]
-                                }
-                            ),
+                            "text": "Aquí hay noticias reales sobre IA y seguridad.",
                             "annotations": [
-                                {"type": "url_citation", "url": "https://real.test/a", "title": "Real"}
+                                {
+                                    "type": "url_citation",
+                                    "url": "https://techcrunch.com/a",
+                                    "title": "Real",
+                                },
+                                {
+                                    "type": "url_citation",
+                                    "url": "https://techcrunch.com/a?utm_source=openai",
+                                    "title": "Real dup",
+                                },
                             ],
                         }
                     ],
@@ -261,13 +272,14 @@ def _handler_mixed_citations(request):
     )
 
 
-_client_mixed = _httpx.Client(transport=_httpx.MockTransport(_handler_mixed_citations))
-result = fetch_x_news(cfg_on, _now, client=_client_mixed)
-assert len(result) == 1
-assert result[0].url == "https://real.test/a"
+_client_real = _httpx.Client(transport=_httpx.MockTransport(_handler_real_citations))
+result = fetch_x_news(cfg_on, _now, client=_client_real)
+assert len(result) == 1, result
+assert result[0].url == "https://techcrunch.com/a"
 assert result[0].title == "Real"
+assert result[0].source == "techcrunch.com"
 assert result[0].tag == "TECH"
-print("OK  x_news: citation gate descarta URLs no citadas")
+print("OK  x_news: Item se construye desde la cita real, deduplicado")
 
 # 12d) JSON malformado -> [] sin lanzar
 def _handler_bad_json(request):
@@ -287,97 +299,21 @@ _client_no_msg = _httpx.Client(transport=_httpx.MockTransport(_handler_no_messag
 assert fetch_x_news(cfg_on, _now, client=_client_no_msg) == []
 print("OK  x_news: respuesta sin mensaje devuelve []")
 
-# 12f) items malformado: null en lugar de lista
-def _handler_items_null(request):
+# 12f) mensaje sin ninguna cita (web_search no encontró/citó nada) -> []
+def _handler_no_citations(request):
     return _httpx.Response(
         200,
         json={
             "output": [
-                {
-                    "type": "message",
-                    "content": [
-                        {
-                            "text": json.dumps({"items": None}),
-                            "annotations": [
-                                {"type": "url_citation", "url": "https://real.test/a", "title": "Real"}
-                            ],
-                        }
-                    ],
-                }
+                {"type": "message", "content": [{"text": "No encontré nada relevante.", "annotations": []}]}
             ]
         },
     )
 
 
-_client_items_null = _httpx.Client(transport=_httpx.MockTransport(_handler_items_null))
-assert fetch_x_news(cfg_on, _now, client=_client_items_null) == []
-print("OK  x_news: items null devuelve [] sin lanzar")
-
-# 12g) items contiene no-dict
-def _handler_items_nondict(request):
-    return _httpx.Response(
-        200,
-        json={
-            "output": [
-                {
-                    "type": "message",
-                    "content": [
-                        {
-                            "text": json.dumps({"items": [123, "string"]}),
-                            "annotations": [
-                                {"type": "url_citation", "url": "https://real.test/a", "title": "Real"}
-                            ],
-                        }
-                    ],
-                }
-            ]
-        },
-    )
-
-
-_client_items_nondict = _httpx.Client(transport=_httpx.MockTransport(_handler_items_nondict))
-assert fetch_x_news(cfg_on, _now, client=_client_items_nondict) == []
-print("OK  x_news: items con valores no-dict devuelve [] sin lanzar")
-
-# 12h) citation gate: el modelo cita una URL limpia pero reporta el item con
-# params de tracking añadidos -- el Item resultante debe llevar la URL de la
-# citación tal cual, no la variante manipulada por el modelo.
-def _handler_tracking_param_spoof(request):
-    return _httpx.Response(
-        200,
-        json={
-            "output": [
-                {
-                    "type": "message",
-                    "content": [
-                        {
-                            "text": json.dumps(
-                                {
-                                    "items": [
-                                        {
-                                            "title": "Real",
-                                            "url": "https://real.test/a?ref=evil.test#frag",
-                                            "source": "S",
-                                        }
-                                    ]
-                                }
-                            ),
-                            "annotations": [
-                                {"type": "url_citation", "url": "https://real.test/a", "title": "Real"}
-                            ],
-                        }
-                    ],
-                }
-            ]
-        },
-    )
-
-
-_client_spoof = _httpx.Client(transport=_httpx.MockTransport(_handler_tracking_param_spoof))
-result_spoof = fetch_x_news(cfg_on, _now, client=_client_spoof)
-assert len(result_spoof) == 1
-assert result_spoof[0].url == "https://real.test/a", result_spoof[0].url
-print("OK  x_news: citation gate entrega la URL citada, no la variante con tracking params")
+_client_no_cit = _httpx.Client(transport=_httpx.MockTransport(_handler_no_citations))
+assert fetch_x_news(cfg_on, _now, client=_client_no_cit) == []
+print("OK  x_news: sin citas web_search devuelve []")
 
 # 12i) crash-hardening: top-level de la respuesta es una lista, no un dict
 def _handler_top_level_list(request):
@@ -412,7 +348,7 @@ print("OK  x_news: 429 con Retry-After negativo devuelve [] sin lanzar ValueErro
 # aplicarse ANTES de aceptar un item, no después)
 cfg_zero_max = _load_config(_tmp_cfg_path)
 cfg_zero_max.x_search_max_items = 0
-_client_zero_max = _httpx.Client(transport=_httpx.MockTransport(_handler_mixed_citations))
+_client_zero_max = _httpx.Client(transport=_httpx.MockTransport(_handler_real_citations))
 assert fetch_x_news(cfg_zero_max, _now, client=_client_zero_max) == []
 print("OK  x_news: x_search_max_items=0 no produce ningún item")
 
