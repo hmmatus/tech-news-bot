@@ -58,6 +58,9 @@ message automatically. No changes needed there.
 
 ## API call shape
 
+**Revised after live testing (see "Resolved risk" below) — this section
+describes what actually shipped, not the original json_schema design.**
+
 Endpoint: `POST https://api.openai.com/v1/responses`
 
 ```json
@@ -65,81 +68,71 @@ Endpoint: `POST https://api.openai.com/v1/responses`
   "model": "gpt-5.6-luna",
   "input": [
     {"role": "system", "content": "<see prompt below>"},
-    {"role": "user", "content": "<query built from cfg.x_search.queries + since>"}
+    {"role": "user", "content": "<query built from cfg.x_search.queries>"}
   ],
   "tools": [
     {"type": "web_search", "search_context_size": "low"}
-  ],
-  "text": {
-    "format": {
-      "type": "json_schema",
-      "name": "x_news_items",
-      "strict": true,
-      "schema": {
-        "type": "object",
-        "properties": {
-          "items": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "title": {"type": "string"},
-                "url": {"type": "string"},
-                "source": {"type": "string"}
-              },
-              "required": ["title", "url", "source"],
-              "additionalProperties": false
-            }
-          }
-        },
-        "required": ["items"],
-        "additionalProperties": false
-      }
-    }
-  }
+  ]
 }
 ```
 
-Model: `gpt-5.6-luna` (cost-optimized tier, $0.20/$1.20 per Mtok input/output)
-by default, overridable via config — this call runs on every scheduled
+No `text.format.json_schema` block — see below for why. Model:
+`gpt-5.6-luna` (cost-optimized tier, $0.20/$1.20 per Mtok input/output) by
+default, overridable via config — this call runs on every scheduled
 workflow trigger (4x/day) so cost matters more than peak reasoning quality.
 
-**Open risk, flagged for the implementation plan:** OpenAI's docs do not
-confirm that `web_search` and strict `text.format.json_schema` can be used
-in the same call. The implementation must verify this against a live call
-early. If they conflict, fallback: call `web_search` without structured
-output, then run a second cheap call (or manual JSON parsing with a
-try/except and a retry-with-correction prompt) to coerce the free-text
-result into the schema.
+**Resolved risk (was flagged as open, now verified against the live API):**
+the original design asked for a strict `text.format.json_schema` alongside
+`web_search`, planning to cross-check the model's structured `items[].url`
+values against the tool's `url_citation` annotations. Live testing showed
+this combination is silently broken: `web_search` still executes real
+searches (confirmed via `web_search_call` output items), but the response's
+`annotations` array comes back **empty** whenever `text.format.json_schema`
+is set — the identical call without the schema constraint returns real
+`url_citation` annotations. OpenAI's API doesn't error; it just drops the
+citations. Since this feature's citation gate requires at least one
+citation to trust anything, the schema-constrained version safely produced
+zero items on every run — correct behavior given the gate's design, but
+functionally dead.
+
+**Fix, and the shipped design:** drop the JSON schema entirely. Don't ask
+the model for a structured items list at all — build `Item`s directly from
+`web_search`'s own `url_citation` annotations instead (see below). This
+removes a whole layer of indirection (and the failure modes that came with
+parsing model-authored JSON) along with the risk.
 
 ### Prompt (system message)
 
-The prompt instructs the model to:
-- Search for tech/AI/security news currently being discussed on X/Twitter
-  from the last `cfg.lookback_hours` hours, using the configured query
-  terms.
-- Return only items it found via search (not from memory/training data).
-- For each item, give the title, the **canonical article/source URL**
-  (not a la carte tweet ID guesses), and the outlet/account name.
-- Return `{"items": []}` if nothing relevant turns up — never pad with
-  invented items to fill a quota.
+The prompt instructs the model to search for tech/AI/security news
+currently being discussed on X/Twitter, using the configured query terms,
+and to cite the real sources it finds — no structured-output instructions,
+since there's no JSON for the model to produce anymore.
 
 ## Anti-hallucination gate (the core safety mechanism)
 
-The model's structured JSON `items[].url` values are **not trusted
-directly**. Instead:
+**Revised from the original design** (which asked the model for a
+structured JSON items list, verified against citations after the fact) —
+see "Resolved risk" above for why that approach was replaced.
+
+There is no model-authored URL to verify anymore. `Item`s are built
+directly from the API's own citation records:
 
 1. Read `response.output` for the `message` item's
    `content[].annotations[]` — these are `url_citation` objects
    `{url, title, start_index, end_index}` corresponding to pages the
-   `web_search` tool actually fetched.
-2. Build a set of citation URLs (normalized via the existing
-   `models.normalize_url`).
-3. For each parsed JSON item, keep it only if its `url` (normalized)
-   exactly matches one of the citation URLs. Drop anything else and log
-   it at DEBUG (not WARNING — expected to happen sometimes, not an error).
-4. If zero items survive this gate, return `[]` — same as any other
-   empty-source case.
+   `web_search` tool actually fetched. Each one already carries both a
+   real `url` and a `title`.
+2. Deduplicate by `models.normalize_url(url)`, keeping the first
+   occurrence's original (un-normalized) URL and title.
+3. Build one `Item` per surviving citation directly — `source` is derived
+   from the citation URL's domain (`urlsplit(url).netloc`, minus a leading
+   `www.`), since annotations carry no separate source/outlet field.
+4. If zero citations survive, return `[]` — same as any other empty-source
+   case.
+
+There is no longer a "the model said X but did it really cite X" check to
+get wrong, because nothing routes through model-authored JSON at all — the
+citation *is* the item.
 
 This makes fabrication structurally hard: the model can put whatever it
 wants in the JSON `url` field, but if it doesn't match a URL the tool
@@ -180,6 +173,13 @@ dependency; it should not silently turn on for existing installs pulling
 a fresh `feeds.yaml` example, and installs that omit the block entirely
 get the same behavior as today.
 
+**`X_SEARCH_ENABLED` env var overrides `feeds.yaml`'s `enabled` in either
+direction** (`true`/`1` forces on, `false`/`0` forces off; unset or empty
+falls through to the yaml value). Lets ops flip the feature via a GitHub
+Actions repo *variable* (`vars.X_SEARCH_ENABLED`, not a secret — it's not
+sensitive) without a commit. Parsed by `_env_bool_override("X_SEARCH_ENABLED")`
+in `load()`.
+
 **Not** a `_require_env`-style property — `telegram_token`/`telegram_chat_id`
 raise `SystemExit` on absence because a missing credential there means the
 whole run cannot deliver anything, so crashing loud is correct. A missing
@@ -208,9 +208,8 @@ Same contract as every other source in `sources.py`: never raises out of
 | `x_search_enabled: false` (default) | Return `[]` immediately, no API call, no key check. |
 | `OPENAI_API_KEY` unset while enabled | Log WARNING, return `[]`. |
 | HTTP/network error calling OpenAI | Log WARNING (reuse `fetch_bytes`-style backoff — same retry budget: 3 attempts, exponential backoff on 5xx/timeouts; 429 respects `Retry-After`), return `[]` on exhaustion. |
-| Malformed / non-JSON response body | Log WARNING, return `[]`. |
-| JSON parses but citation gate drops everything | Log INFO ("0 nota(s) recientes" — same as any empty source), return `[]`. |
-| OpenAI returns items but `annotations` missing entirely (structured-output/web_search conflict from the open risk above) | Log WARNING once distinctly ("no citations returned, discarding N item(s)"), return `[]`. This is the fail-safe for the unverified API-combination risk. |
+| Malformed / non-JSON response body, or an unexpected envelope shape (top-level not a dict, `content`/`annotations` not lists of dicts, etc.) | Log WARNING, return `[]`. |
+| `web_search` returns zero citations (nothing found, or nothing worth citing) | Log WARNING, return `[]`. This is the only "found nothing" case now — there's no separate structured-output-conflict scenario to distinguish, since there's no structured output to conflict. |
 
 ## Workflow change
 
@@ -230,15 +229,17 @@ runs inline inside `python -m src.main` like every other source.
 `tools/test_pipeline.py` runs offline (network is blocked in the test
 container) and asserts against synthetic data — the same style continues:
 
-1. Citation-matching gate: given a fake OpenAI response payload where one
-   item's URL is in `annotations` and one isn't, assert only the cited one
-   survives.
+1. Citation extraction: given a fake OpenAI response payload with several
+   `annotations`, including a duplicate URL differing only by tracking
+   params, assert the resulting items are deduplicated by normalized URL
+   and built from the citations' own `url`/`title`.
 2. `x_search_enabled: false` (default): assert `fetch_x_news` returns `[]`
    without attempting any network call (verifiable by not needing
    `OPENAI_API_KEY` set in the test env at all).
 3. Missing `OPENAI_API_KEY` while enabled: assert `[]` + no exception.
-4. Malformed JSON body: assert `[]` + no exception.
-5. Happy path: valid payload with matching citations produces correctly
+4. Malformed JSON body or unexpected envelope shape: assert `[]` + no
+   exception.
+5. Happy path: valid payload with real citations produces correctly
    shaped `Item` objects that flow through `filters.classify` /
    `filters.rank` / dedup identically to RSS-sourced items.
 

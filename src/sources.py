@@ -13,6 +13,7 @@ import httpx
 
 from .config import Config, Feed
 from .models import Item
+from . import x_news
 
 log = logging.getLogger(__name__)
 
@@ -196,4 +197,4 @@ def fetch_hackernews(cfg: Config, since: datetime) -> list[Item]:
 
 def collect(cfg: Config) -> list[Item]:
     since = datetime.now(timezone.utc) - timedelta(hours=cfg.lookback_hours)
-    return fetch_rss(cfg, since) + fetch_hackernews(cfg, since)
+    return fetch_rss(cfg, since) + fetch_hackernews(cfg, since) + x_news.fetch_x_news(cfg, since)

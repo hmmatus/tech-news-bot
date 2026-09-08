@@ -34,6 +34,10 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          # Repo variable (Settings > Secrets and variables > Actions > Variables),
+          # no un secret: solo prende/apaga la búsqueda en X sin editar feeds.yaml.
+          X_SEARCH_ENABLED: ${{ vars.X_SEARCH_ENABLED }}
         run: python -m src.main
 
       - name: Guardar estado de deduplicación
