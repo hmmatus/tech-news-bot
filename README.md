@@ -82,6 +82,7 @@ En GitHub: **Settings → Secrets and variables → Actions → New repository s
 |---|---|
 | `TELEGRAM_BOT_TOKEN` | el token de BotFather |
 | `TELEGRAM_CHAT_ID` | el id del paso 2 |
+| `OPENAI_API_KEY` | opcional — solo si activas `x_search.enabled: true` en `feeds.yaml` (ver [Sobre X (Twitter)](#sobre-x-twitter)) |
 
 ## Paso 6 — Permitir que el workflow commitee el estado
 
@@ -126,6 +127,7 @@ Ya activo, el cron corre a las **06:00, 10:00, 14:00 y 18:00** hora de El Salvad
 src/config.py     carga feeds.yaml y valida las variables de entorno
 src/models.py     Item + normalización de URL y fingerprint para dedup
 src/sources.py    lectura de RSS (paralela) y de Hacker News vía Algolia
+src/x_news.py     noticias de X (Twitter) vía OpenAI Responses API + web_search (opcional)
 src/filters.py    reclasificación por keywords y orden por recencia
 src/store.py      estado JSON de notas ya enviadas, con purga por antigüedad
 src/telegram.py   formato del mensaje, escapado HTML y corte a 4096 chars
@@ -135,6 +137,6 @@ tools/            verificador de feeds y pruebas del pipeline
 
 ## Sobre X (Twitter)
 
-Se descartó como fuente a propósito: desde julio de 2023 la API no tiene tier gratuito de lectura, y el plan Basic ronda los **200 USD/mes**. Hacer scraping de la web con una sesión propia rompe los ToS y se cae cada vez que X cambia el frontend. Los feeds oficiales de este proyecto (OpenAI, Google, Apple, AWS, CISA) publican lo mismo, antes y con fecha exacta.
+X ya no se descarta como fuente: desde julio de 2023 la API oficial de lectura no tiene tier gratuito (el plan Basic ronda los **200 USD/mes**), y hacer scraping directo rompe los ToS y se cae cada vez que X cambia el frontend. En vez de eso, `src/x_news.py` usa la herramienta `web_search` de la **Responses API de OpenAI** para encontrar qué se está discutiendo ahora mismo en/sobre X en tecnología, IA y ciberseguridad — sin credenciales de X ni scraping.
 
-Si aun así quieres X, la vía sostenible es la API oficial: `GET /2/lists/:id/tweets` sobre una lista curada, con `TWITTER_BEARER_TOKEN` como secret. Encajaría como un módulo más en `src/sources.py` devolviendo `Item`.
+Es una fuente **opcional y desactivada por defecto** (`x_search.enabled: false` en `feeds.yaml`): actívala solo si aceptas el costo por corrida de llamar a la API de OpenAI. Como salvaguarda, ninguna nota se construye a partir de una URL que el modelo simplemente haya mencionado: solo se aceptan URLs que aparezcan como citación real (`url_citation`) devuelta por la propia herramienta `web_search`, es decir, páginas que de verdad fueron consultadas.

@@ -89,13 +89,21 @@ def _extract_message(body: dict) -> dict | None:
     return None
 
 
-def _citation_urls(message: dict) -> set[str]:
-    urls = set()
+def _citation_urls(message: dict) -> dict[str, str]:
+    """Mapa normalize_url(url_citada) -> url_citada tal cual la devolvió
+    web_search. Se usa el valor (no la clave) al construir el Item, para que
+    la URL final sea literalmente la que la herramienta citó, no una que
+    simplemente normalice igual (ver hallazgo de citation-gate spoofing)."""
+    urls: dict[str, str] = {}
     for block in message.get("content", []):
+        if not isinstance(block, dict):
+            continue
         for annotation in block.get("annotations", []):
+            if not isinstance(annotation, dict):
+                continue
             url = annotation.get("url")
             if url:
-                urls.add(normalize_url(url))
+                urls[normalize_url(url)] = url
     return urls
 
 
@@ -118,7 +126,7 @@ def _retry_after_seconds(response: httpx.Response) -> float | None:
     if not value:
         return None
     try:
-        return min(float(value), MAX_BACKOFF_SECONDS)
+        return max(0.0, min(float(value), MAX_BACKOFF_SECONDS))
     except ValueError:
         return None
 
@@ -188,7 +196,11 @@ def fetch_x_news(
 
     try:
         response = _post_with_retries(client, RESPONSES_ENDPOINT, headers, body)
-    except httpx.HTTPError as exc:
+    except Exception as exc:
+        # Cualquier fallo al llamar a OpenAI (red, timeout, status HTTP, o el
+        # AssertionError "unreachable" de _post_with_retries ante un 2xx
+        # inesperado que no sea 200) no debe abortar la corrida completa: es
+        # una fuente opcional, RSS y Hacker News ya se recolectaron aparte.
         log.warning("No se pudo consultar noticias de X: %s", exc)
         return []
     finally:
@@ -197,36 +209,43 @@ def fetch_x_news(
 
     try:
         payload = response.json()
-    except ValueError as exc:
-        log.warning("Respuesta inválida de OpenAI: %s", exc)
-        return []
 
-    message = _extract_message(payload)
-    if message is None:
-        log.warning("Respuesta de OpenAI sin mensaje de salida.")
-        return []
+        message = _extract_message(payload)
+        if message is None:
+            log.warning("Respuesta de OpenAI sin mensaje de salida.")
+            return []
 
-    citations = _citation_urls(message)
-    if not citations:
-        log.warning("Respuesta de OpenAI sin citas web_search; se descarta.")
-        return []
+        citations = _citation_urls(message)
+        if not citations:
+            diag_text = _message_text(message)
+            log.warning(
+                "Respuesta de OpenAI sin citas web_search; se descarta "
+                "(%d caracteres de texto).",
+                len(diag_text) if diag_text else 0,
+            )
+            return []
 
-    text = _message_text(message)
-    if not text:
-        log.warning("Respuesta de OpenAI sin contenido de texto.")
-        return []
+        text = _message_text(message)
+        if not text:
+            log.warning("Respuesta de OpenAI sin contenido de texto.")
+            return []
 
-    try:
         parsed = json.loads(text)
         raw_items = parsed["items"]
         if not isinstance(raw_items, list):
             raise TypeError("items no es una lista")
-    except (ValueError, KeyError, TypeError) as exc:
-        log.warning("JSON de OpenAI con forma inesperada: %s", exc)
+    except Exception as exc:
+        # Cubre JSON inválido, forma inesperada (top-level no es un dict,
+        # "output"/"content"/"annotations" con tipos que no son lista/dict,
+        # etc.) que haría que .get()/[...] lance AttributeError/TypeError/
+        # KeyError/ValueError más adelante en el parseo.
+        log.warning("Respuesta de OpenAI con forma inesperada: %s", exc)
         return []
 
     items: list[Item] = []
     for raw in raw_items:
+        if cfg.x_search_max_items <= 0 or len(items) >= cfg.x_search_max_items:
+            break
         if not isinstance(raw, dict):
             continue
         url_val = raw.get("url")
@@ -237,20 +256,19 @@ def fetch_x_news(
         source = (source_val if isinstance(source_val, str) else "X").strip()
         if not url or not title:
             continue
-        if normalize_url(url) not in citations:
-            log.debug("Descartada por falta de cita: %s", url)
+        cited_url = citations.get(normalize_url(url))
+        if cited_url is None:
+            log.debug("Descartada por falta de cita: %r", url)
             continue
         items.append(
             Item(
                 title=title,
-                url=url,
+                url=cited_url,
                 published=datetime.now(timezone.utc),
                 source=source,
                 tag="TECH",
             )
         )
-        if len(items) >= cfg.x_search_max_items:
-            break
 
     log.info("%-22s %2d nota(s) recientes", "X (Twitter)", len(items))
     return items

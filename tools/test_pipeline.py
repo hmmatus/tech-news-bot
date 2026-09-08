@@ -154,12 +154,12 @@ _fake_response_body = {
 }
 msg = _extract_message(_fake_response_body)
 assert msg is not None and msg["type"] == "message"
-assert _citation_urls(msg) == {"https://real.test/a"}
+assert _citation_urls(msg) == {"https://real.test/a": "https://real.test/a"}
 assert "real.test/a" in _message_text(msg)
 print("OK  x_news: _extract_message/_citation_urls/_message_text parsean la respuesta")
 
 assert _extract_message({"output": []}) is None
-assert _citation_urls({"content": []}) == set()
+assert _citation_urls({"content": []}) == {}
 assert _message_text({"content": []}) is None
 print("OK  x_news: helpers devuelven vacío/None ante respuesta sin datos")
 
@@ -338,6 +338,83 @@ def _handler_items_nondict(request):
 _client_items_nondict = _httpx.Client(transport=_httpx.MockTransport(_handler_items_nondict))
 assert fetch_x_news(cfg_on, _now, client=_client_items_nondict) == []
 print("OK  x_news: items con valores no-dict devuelve [] sin lanzar")
+
+# 12h) citation gate: el modelo cita una URL limpia pero reporta el item con
+# params de tracking añadidos -- el Item resultante debe llevar la URL de la
+# citación tal cual, no la variante manipulada por el modelo.
+def _handler_tracking_param_spoof(request):
+    return _httpx.Response(
+        200,
+        json={
+            "output": [
+                {
+                    "type": "message",
+                    "content": [
+                        {
+                            "text": json.dumps(
+                                {
+                                    "items": [
+                                        {
+                                            "title": "Real",
+                                            "url": "https://real.test/a?ref=evil.test#frag",
+                                            "source": "S",
+                                        }
+                                    ]
+                                }
+                            ),
+                            "annotations": [
+                                {"type": "url_citation", "url": "https://real.test/a", "title": "Real"}
+                            ],
+                        }
+                    ],
+                }
+            ]
+        },
+    )
+
+
+_client_spoof = _httpx.Client(transport=_httpx.MockTransport(_handler_tracking_param_spoof))
+result_spoof = fetch_x_news(cfg_on, _now, client=_client_spoof)
+assert len(result_spoof) == 1
+assert result_spoof[0].url == "https://real.test/a", result_spoof[0].url
+print("OK  x_news: citation gate entrega la URL citada, no la variante con tracking params")
+
+# 12i) crash-hardening: top-level de la respuesta es una lista, no un dict
+def _handler_top_level_list(request):
+    return _httpx.Response(200, json=[1, 2, 3])
+
+
+_client_top_list = _httpx.Client(transport=_httpx.MockTransport(_handler_top_level_list))
+assert fetch_x_news(cfg_on, _now, client=_client_top_list) == []
+print("OK  x_news: top-level JSON es una lista devuelve [] sin lanzar")
+
+# 12j) crash-hardening: HTTP 204 (2xx que no es 200) no debe reventar el
+# guard "unreachable" de _post_with_retries
+def _handler_204(request):
+    return _httpx.Response(204)
+
+
+_client_204 = _httpx.Client(transport=_httpx.MockTransport(_handler_204))
+assert fetch_x_news(cfg_on, _now, client=_client_204) == []
+print("OK  x_news: HTTP 204 devuelve [] sin lanzar AssertionError")
+
+# 12k) crash-hardening: 429 con Retry-After negativo no debe llegar a
+# time.sleep() con un valor negativo
+def _handler_429_negative_retry_after(request):
+    return _httpx.Response(429, headers={"Retry-After": "-5"}, json={})
+
+
+_client_429_neg = _httpx.Client(transport=_httpx.MockTransport(_handler_429_negative_retry_after))
+assert fetch_x_news(cfg_on, _now, client=_client_429_neg) == []
+print("OK  x_news: 429 con Retry-After negativo devuelve [] sin lanzar ValueError")
+
+# 12l) max_items <= 0 no debe colar ningún item (el chequeo del tope debe
+# aplicarse ANTES de aceptar un item, no después)
+cfg_zero_max = _load_config(_tmp_cfg_path)
+cfg_zero_max.x_search_max_items = 0
+_client_zero_max = _httpx.Client(transport=_httpx.MockTransport(_handler_mixed_citations))
+assert fetch_x_news(cfg_zero_max, _now, client=_client_zero_max) == []
+print("OK  x_news: x_search_max_items=0 no produce ningún item")
 
 os.environ.pop("OPENAI_API_KEY", None)
 
