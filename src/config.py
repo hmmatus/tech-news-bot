@@ -50,6 +50,16 @@ class Config:
         return os.environ.get("OPENAI_API_KEY", "").strip() or None
 
 
+def _env_bool_override(name: str) -> bool | None:
+    """Lee un booleano desde una variable de entorno; None si no está
+    definida (o está vacía), para que el valor de feeds.yaml siga
+    aplicando. Definida, sobreescribe el yaml en cualquier dirección."""
+    value = os.environ.get(name, "").strip().lower()
+    if not value:
+        return None
+    return value not in ("0", "false", "no", "off")
+
+
 def _require_env(name: str) -> str:
     value = os.environ.get(name, "").strip()
     if not value:
@@ -83,6 +93,10 @@ def load(path: str | Path = ROOT / "feeds.yaml") -> Config:
     settings = raw.get("settings", {}) or {}
     keywords = {k.upper(): [w.lower() for w in v] for k, v in (raw.get("keywords") or {}).items()}
     x_search = raw.get("x_search", {}) or {}
+    x_search_enabled = bool(x_search.get("enabled", False))
+    env_override = _env_bool_override("X_SEARCH_ENABLED")
+    if env_override is not None:
+        x_search_enabled = env_override
 
     return Config(
         feeds=feeds,
@@ -94,7 +108,7 @@ def load(path: str | Path = ROOT / "feeds.yaml") -> Config:
         hn_min_points=int(settings.get("hn_min_points", 80)),
         hn_enabled=bool(settings.get("hn_enabled", True)),
         state_retention_days=int(settings.get("state_retention_days", 14)),
-        x_search_enabled=bool(x_search.get("enabled", False)),
+        x_search_enabled=x_search_enabled,
         x_search_queries=[str(q) for q in (x_search.get("queries") or [])],
         x_search_max_items=int(x_search.get("max_items", 5)),
         x_search_model=str(x_search.get("model", "gpt-5.6-luna")),

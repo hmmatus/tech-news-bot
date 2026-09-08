@@ -173,6 +173,13 @@ dependency; it should not silently turn on for existing installs pulling
 a fresh `feeds.yaml` example, and installs that omit the block entirely
 get the same behavior as today.
 
+**`X_SEARCH_ENABLED` env var overrides `feeds.yaml`'s `enabled` in either
+direction** (`true`/`1` forces on, `false`/`0` forces off; unset or empty
+falls through to the yaml value). Lets ops flip the feature via a GitHub
+Actions repo *variable* (`vars.X_SEARCH_ENABLED`, not a secret — it's not
+sensitive) without a commit. Parsed by `_env_bool_override("X_SEARCH_ENABLED")`
+in `load()`.
+
 **Not** a `_require_env`-style property — `telegram_token`/`telegram_chat_id`
 raise `SystemExit` on absence because a missing credential there means the
 whole run cannot deliver anything, so crashing loud is correct. A missing

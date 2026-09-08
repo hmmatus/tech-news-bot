@@ -124,6 +124,26 @@ assert cfg_con_x.openai_api_key == "sk-test-123"
 os.environ.pop("OPENAI_API_KEY", None)
 print("OK  x_search: openai_api_key no lanza, devuelve None si falta")
 
+# 9b) X_SEARCH_ENABLED (env var) sobreescribe feeds.yaml en cualquier
+# dirección; sin definir, el yaml manda como antes.
+os.environ.pop("X_SEARCH_ENABLED", None)
+assert _load_config(_tmp_cfg_path).x_search_enabled is True  # yaml dice true, sin env var
+os.environ["X_SEARCH_ENABLED"] = "false"
+assert _load_config(_tmp_cfg_path).x_search_enabled is False  # env var apaga aunque yaml diga true
+os.environ["X_SEARCH_ENABLED"] = "0"
+assert _load_config(_tmp_cfg_path).x_search_enabled is False
+os.environ.pop("X_SEARCH_ENABLED", None)
+
+_tmp_cfg_path.write_text(_feeds_yaml_sin_x_search, encoding="utf-8")  # yaml sin bloque -> False
+os.environ["X_SEARCH_ENABLED"] = "true"
+assert _load_config(_tmp_cfg_path).x_search_enabled is True  # env var prende aunque falte el bloque
+os.environ["X_SEARCH_ENABLED"] = "1"
+assert _load_config(_tmp_cfg_path).x_search_enabled is True
+os.environ.pop("X_SEARCH_ENABLED", None)
+assert _load_config(_tmp_cfg_path).x_search_enabled is False  # vuelve a mandar el yaml
+_tmp_cfg_path.write_text(_feeds_yaml_con_x_search, encoding="utf-8")  # restaura para las secciones siguientes
+print("OK  x_search: X_SEARCH_ENABLED sobreescribe el yaml en ambas direcciones")
+
 # 10) x_news: helpers de construcción de request y parseo de respuesta
 from src.x_news import _build_body, _extract_message, _citations, _source_from_url
 
